@@ -360,6 +360,12 @@ def DoImport(FileName):
 	BArmature.select_set(True)
 	bpy.context.view_layer.objects.active = BArmature
 
+	# Flip the armature 180° on Z so the model faces forward in Blender.
+	# This is a local display transform only — all children follow automatically
+	# and the exporter's own coordinate swaps are unaffected.
+	import math
+	BArmature.rotation_euler[2] = math.pi
+
 	# -----------------------------------------------------------------------
 	# Auto bone-map: if the Bone-Mapper add-on has a map for this M2, apply it
 	# -----------------------------------------------------------------------
