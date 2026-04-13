@@ -377,7 +377,113 @@ def DoImport(FileName):
 		print('[WoW Tools] No matching bone map found — bones left as indexed names.')
 	# -----------------------------------------------------------------------
 
+	# -----------------------------------------------------------------------
+	# Auto texture assignment: scan the M2I folder for .png / .jpg images,
+	# create a simple Principled BSDF material for each one, and assign it
+	# to any mesh whose TextureName0 stem matches the image filename stem.
+	# -----------------------------------------------------------------------
+	_assign_textures_from_folder(FileName, MeshList, MeshResultNames)
+	# -----------------------------------------------------------------------
+
 	print('M2I imported successfully: ' + FileName)
+
+
+def _assign_textures_from_folder(m2i_path, mesh_list, mesh_result_names):
+	"""
+	Scan the directory containing the imported M2I for .png and .jpg images.
+	For each image found, create (or reuse) a Blender material with a simple
+	Principled BSDF + Image Texture node setup.  Assign that material to every
+	mesh whose TextureNames slot stems match the image filename stem
+	(case-insensitive, extension-agnostic: 'alleria.blp' matches 'alleria.png').
+	"""
+	from pathlib import Path
+
+	folder = Path(m2i_path).parent
+	image_extensions = {'.png', '.jpg', '.jpeg'}
+	image_files = [p for p in folder.iterdir()
+	               if p.is_file() and p.suffix.lower() in image_extensions]
+
+	if not image_files:
+		print('[WoW Tools] No .png / .jpg textures found alongside the M2I — skipping auto-assign.')
+		return
+
+	stem_to_path = {p.stem.lower(): p for p in image_files}
+	print(f'[WoW Tools] Found {len(image_files)} texture(s) for auto-assignment: '
+	      f'{[p.name for p in image_files]}')
+
+	mat_cache = {}
+
+	def _get_or_create_material(image_path):
+		key = str(image_path)
+		if key in mat_cache:
+			return mat_cache[key]
+
+		mat_name = image_path.stem
+		mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(name=mat_name)
+		mat.use_nodes = True
+		nodes = mat.node_tree.nodes
+		links = mat.node_tree.links
+		nodes.clear()
+
+		# Node layout: Texture → Diffuse BSDF → Material Output
+		out = nodes.new('ShaderNodeOutputMaterial')
+		out.location = (600, 0)
+
+		diffuse = nodes.new('ShaderNodeBsdfDiffuse')
+		diffuse.location = (200, 0)
+		links.new(diffuse.outputs['BSDF'], out.inputs['Surface'])
+
+		tex_node = nodes.new('ShaderNodeTexImage')
+		tex_node.location = (-200, 0)
+
+		img = bpy.data.images.get(image_path.name)
+		if img is None:
+			img = bpy.data.images.load(str(image_path))
+		tex_node.image = img
+		links.new(tex_node.outputs['Color'], diffuse.inputs['Color'])
+
+		mat_cache[key] = mat
+		print(f'[WoW Tools]   Created material "{mat_name}" from {image_path.name}')
+		return mat
+
+	# --- Step 1: Create materials for ALL found textures up front ---
+	# This guarantees every image gets a material even if no mesh references it,
+	# so the user can manually apply them from the material list.
+	for image_path in image_files:
+		_get_or_create_material(image_path)
+
+	# --- Step 2: Try to auto-assign materials to matching meshes ---
+	assigned = 0
+	for k, mesh_obj_name in mesh_result_names.items():
+		mesh_obj = bpy.data.objects.get(mesh_obj_name)
+		if mesh_obj is None:
+			continue
+
+		mesh_data = mesh_list[k]
+		matched_path = None
+		for tex_name in mesh_data.TextureNames:
+			if not tex_name:
+				continue
+			tex_stem = Path(tex_name).stem.lower()
+			if tex_stem in stem_to_path:
+				matched_path = stem_to_path[tex_stem]
+				break
+
+		if matched_path is None:
+			print(f'[WoW Tools]   {mesh_obj_name}: no matching texture '
+			      f'(TextureNames: {[t for t in mesh_data.TextureNames if t]}) '
+			      f'— material(s) available in the material list for manual assignment.')
+			continue
+
+		mat = _get_or_create_material(matched_path)
+		if len(mesh_obj.data.materials) == 0:
+			mesh_obj.data.materials.append(mat)
+		else:
+			mesh_obj.data.materials[0] = mat
+		assigned += 1
+
+	print(f'[WoW Tools] Auto-texture: assigned materials to {assigned} / {len(mesh_result_names)} mesh(es). '
+	      f'All {len(image_files)} texture material(s) available in the material list.')
 
 def createTextureLayers(me, name, texFaces):
 	uvtex = me.uv_layers.new(name = name)
